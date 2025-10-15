@@ -1,0 +1,82 @@
+{
+  "Baranya": {
+    "capital": "Pécs",
+    "neighbors": ["Somogy", "Tolna"]
+  },
+  "Bács-Kiskun": {
+    "capital": "Kecskemét",
+    "neighbors": ["Pest", "Jász-Nagykun-Szolnok", "Csongrád-Csanád", "Tolna", "Fejér"]
+  },
+  "Békés": {
+    "capital": "Békéscsaba",
+    "neighbors": ["Csongrád-Csanád", "Jász-Nagykun-Szolnok", "Hajdú-Bihar"]
+  },
+  "Borsod-Abaúj-Zemplén": {
+    "capital": "Miskolc",
+    "neighbors": ["Nógrád", "Heves", "Jász-Nagykun-Szolnok", "Hajdú-Bihar", "Szabolcs-Szatmár-Bereg"]
+  },
+  "Csongrád-Csanád": {
+    "capital": "Szeged",
+    "neighbors": ["Bács-Kiskun", "Jász-Nagykun-Szolnok", "Békés"]
+  },
+  "Fejér": {
+    "capital": "Székesfehérvár",
+    "neighbors": ["Komárom-Esztergom", "Pest", "Bács-Kiskun", "Tolna", "Somogy", "Veszprém"]
+  },
+  "Győr-Moson-Sopron": {
+    "capital": "Győr",
+    "neighbors": ["Komárom-Esztergom", "Veszprém", "Vas"]
+  },
+  "Hajdú-Bihar": {
+    "capital": "Debrecen",
+    "neighbors": ["Szabolcs-Szatmár-Bereg", "Borsod-Abaúj-Zemplén", "Jász-Nagykun-Szolnok", "Békés"]
+  },
+  "Heves": {
+    "capital": "Eger",
+    "neighbors": ["Nógrád", "Borsod-Abaúj-Zemplén", "Jász-Nagykun-Szolnok", "Pest"]
+  },
+  "Jász-Nagykun-Szolnok": {
+    "capital": "Szolnok",
+    "neighbors": ["Pest", "Heves", "Borsod-Abaúj-Zemplén", "Hajdú-Bihar", "Békés", "Csongrád-Csanád", "Bács-Kiskun"]
+  },
+  "Komárom-Esztergom": {
+    "capital": "Tatabánya",
+    "neighbors": ["Győr-Moson-Sopron", "Veszprém", "Fejér", "Pest"]
+  },
+  "Nógrád": {
+    "capital": "Salgótarján",
+    "neighbors": ["Pest", "Heves", "Borsod-Abaúj-Zemplén"]
+  },
+  "Pest": {
+    "capital": "Budapest",
+    "neighbors": ["Nógrád", "Heves", "Jász-Nagykun-Szolnok", "Bács-Kiskun", "Fejér", "Komárom-Esztergom"]
+  },
+  "Somogy": {
+    "capital": "Kaposvár",
+    "neighbors": ["Zala", "Veszprém", "Fejér", "Tolna", "Baranya"]
+  },
+  "Szabolcs-Szatmár-Bereg": {
+    "capital": "Nyíregyháza",
+    "neighbors": ["Borsod-Abaúj-Zemplén", "Hajdú-Bihar"]
+  },
+  "Tolna": {
+    "capital": "Szekszárd",
+    "neighbors": ["Fejér", "Bács-Kiskun", "Baranya", "Somogy"]
+  },
+  "Vas": {
+    "capital": "Szombathely",
+    "neighbors": ["Győr-Moson-Sopron", "Veszprém", "Zala"]
+  },
+  "Veszprém": {
+    "capital": "Veszprém",
+    "neighbors": ["Győr-Moson-Sopron", "Komárom-Esztergom", "Fejér", "Somogy", "Zala", "Vas"]
+  },
+  "Zala": {
+    "capital": "Zalaegerszeg",
+    "neighbors": ["Vas", "Veszprém", "Somogy"]
+  },
+  "Budapest": {
+    "capital": "Budapest",
+    "neighbors": []
+  }
+}
