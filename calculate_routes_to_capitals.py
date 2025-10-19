@@ -157,7 +157,7 @@ def main():
     total_towns = len(all_towns)
 
     # 2. Loop through each town and process
-    for i, town in enumerate(all_towns[10:500]):
+    for i, town in enumerate(all_towns[500:1000]):
         print(f"({i+1}/{total_towns}) Processing: {town['name']}...")
         
         # Normalize county name (e.g., "Fejér vármegye" -> "Fejér")
