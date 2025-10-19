@@ -1,107 +1,220 @@
 import sqlite3
 import json
+import os
+import time
+from google.maps import routing_v2
+from google.protobuf import field_mask_pb2
+from google.protobuf.json_format import MessageToJson
+from dotenv import load_dotenv
 
+load_dotenv()
+
+# --- CONFIGURATION ---
 DATABASE_NAME = 'hungarian_towns.db'
 NEIGHBORS_FILE = 'county_neighbors.json'
-BUDAPEST_COORDS = {"latitude": 47.4983, "longitude": 19.0408}
+API_KEY = os.getenv('ROUTES_API_KEY') # Securely load API key
 
-def load_county_data():
-    """Loads the county neighbors and capitals from the JSON file."""
-    with open(NEIGHBORS_FILE, 'r', encoding='utf-8') as f:
-        return json.load(f)
+# --- DATABASE FUNCTIONS ---
 
-def get_towns_from_db():
-    """Fetches all towns with their coordinates and county from the database."""
+def add_commute_columns():
+    """Adds columns to the database to store commute data. Idempotent."""
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
-    # Fetch only towns that have coordinates
+    try:
+        cursor.execute("ALTER TABLE towns ADD COLUMN commute_budapest_mins INTEGER")
+        cursor.execute("ALTER TABLE towns ADD COLUMN commute_nearest_capital_mins INTEGER")
+        cursor.execute("ALTER TABLE towns ADD COLUMN nearest_capital_name TEXT")
+        print("Database columns added successfully.")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e):
+            print("Database columns already exist. Skipping.")
+        else:
+            raise e
+    conn.commit()
+    conn.close()
+
+def get_all_towns_data():
+    """Fetches all towns with their coordinates and county from the database."""
+    conn = sqlite3.connect(DATABASE_NAME)
+    conn.row_factory = sqlite3.Row # Allows accessing columns by name
+    cursor = conn.cursor()
     cursor.execute("SELECT name, county, latitude, longitude FROM towns WHERE latitude IS NOT NULL AND longitude IS NOT NULL")
     towns = cursor.fetchall()
     conn.close()
-    return towns
+    return [dict(row) for row in towns]
 
-def generate_commute_plan(towns, county_data):
+def update_town_in_db(town_name, budapest_mins, nearest_capital_mins, nearest_capital_name):
+    """Updates a single town's record with the new commute data."""
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE towns
+        SET commute_budapest_mins = ?,
+            commute_nearest_capital_mins = ?,
+            nearest_capital_name = ?
+        WHERE name = ?
+    """, (budapest_mins, nearest_capital_mins, nearest_capital_name, town_name))
+    conn.commit()
+    conn.close()
+
+# --- DATA PREPARATION ---
+
+def load_county_neighbors():
+    """Loads the county neighbors and capital names from the JSON file."""
+    with open(NEIGHBORS_FILE, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+def get_capital_cities_coords(all_towns, county_data):
     """
-    Generates a plan of which routes to calculate for each town.
-    This doesn't call the API, just prepares the list of origins and destinations.
+    Dynamically builds a dictionary of capital city names to their coordinates
+    by looking them up in the scraped towns data.
     """
-    commute_plan = {}
+    capital_names = {data['capital'] for data in county_data.values()}
+    capital_coords = {}
+    for town in all_towns:
+        if town['name'] in capital_names:
+            capital_coords[town['name']] = {
+                "latitude": town['latitude'],
+                "longitude": town['longitude']
+            }
+    print(f"Successfully located coordinates for {len(capital_coords)} capital cities in the database.")
+    return capital_coords
+
+
+# --- GOOGLE ROUTES API FUNCTION ---
+
+def calculate_commute_times(client, origin_coords, destinations):
+    """
+    Calls the Google Routes API's computeRouteMatrix to get drive times.
+    """
+    if not destinations:
+        return {}
     
-    for town_name, town_county_raw, town_lat, town_lon in towns:
-        # The scraper might have stored county as "Csongrád-Csanád" or "Csongrád". Let's try to normalize.
-        town_county = town_county_raw
-        if town_county not in county_data:
-            # Handle cases like "Borsod-Abaúj-Zemplén" vs "Borsod-Abaúj-Zemplén vármegye"
-            # Or "Csongrád" vs "Csongrád-Csanád"
-            if town_county == "Csongrád":
-                town_county = "Csongrád-Csanád"
-            else:
-                print(f"Warning: County '{town_county}' for town '{town_name}' not found in JSON. Skipping.")
-                continue
+    route_origins = [routing_v2.RouteMatrixOrigin(
+        waypoint=routing_v2.Waypoint(location=routing_v2.Location(lat_lng=origin_coords))
+    )]
+    route_destinations = [
+        routing_v2.RouteMatrixDestination(
+            waypoint=routing_v2.Waypoint(location=routing_v2.Location(lat_lng=dest_coords))
+        ) for dest_coords in destinations.values()
+    ]
+    
+    request = routing_v2.ComputeRouteMatrixRequest(
+        origins=route_origins,
+        destinations=route_destinations,
+        travel_mode=routing_v2.RouteTravelMode.DRIVE,
+    )
 
-        town_origin = {"latitude": town_lat, "longitude": town_lon}
-        destinations_to_check = {}
+    # Create the FieldMask object to hold our desired paths
+    field_mask = field_mask_pb2.FieldMask(paths=["origin_index", "destination_index", "duration", "status"])
 
-        # 1. Add the town's own county capital
-        own_capital_info = county_data[town_county]
-        destinations_to_check[own_capital_info['capital']] = own_capital_info['capital_coords']
+    try:
+        # *** THE FINAL FIX ***
+        # Manually join the paths into a simple comma-separated string.
+        # This is the format the x-goog-fieldmask header expects.
+        response_stream = client.compute_route_matrix(
+            request=request,
+            metadata=[("x-goog-fieldmask", ",".join(field_mask.paths))],
+        )
+    except Exception as e:
+        print(f"  ERROR: API call failed: {e}")
+        return None
 
-        # 2. Add the capitals of all neighboring counties
-        for neighbor_county_name in own_capital_info['neighbors']:
-            neighbor_capital_info = county_data[neighbor_county_name]
-            destinations_to_check[neighbor_capital_info['capital']] = neighbor_capital_info['capital_coords']
+    results = {}
+    destination_names = list(destinations.keys())
+    for element in response_stream:
+        if element.status.code == 0:
+            duration_seconds = element.duration.seconds
+            commute_mins = round(duration_seconds / 60)
+            dest_name = destination_names[element.destination_index]
+            results[dest_name] = commute_mins
+        else:
+            dest_name = destination_names[element.destination_index]
+            print(f"  WARNING: Could not find route to {dest_name}. Status: {element.status.message} (Code: {element.status.code})")
+            results[dest_name] = None
+    return results
 
-        # 3. Always add Budapest
-        destinations_to_check["Budapest"] = BUDAPEST_COORDS
-        
-        commute_plan[town_name] = {
-            "origin": town_origin,
-            "destinations": destinations_to_check
-        }
-        
-    return commute_plan
 
+# --- MAIN EXECUTION ---
 
 def main():
-    county_data = load_county_data()
-    all_towns = get_towns_from_db()
-    plan = generate_commute_plan(all_towns, county_data)
+    if not API_KEY:
+        print("ERROR: GOOGLE_API_KEY environment variable not set. Exiting.")
+        return
 
-    print(f"Generated a commute calculation plan for {len(plan)} towns.")
-    print("-" * 50)
-
-    # --- THIS IS WHERE YOU WOULD CALL THE GOOGLE ROUTES API ---
-    # You would iterate through the 'plan' dictionary and for each town,
-    # make one or more API calls with its origin and list of destinations.
+    # Initialize the API client
+    routes_client = routing_v2.RoutesClient(
+        client_options={"api_key": API_KEY}
+    )
     
-    # Example of what the loop would look like:
-    # for town_name, data in plan.items():
-    #     origin_coords = data['origin']
-    #     destination_coords_list = list(data['destinations'].values())
-    #
-    #     # A single Google Routes API call can handle one origin and multiple destinations
-    #     # This is highly cost-effective!
-    #     results = call_google_routes_api(origin_coords, destination_coords_list)
-    #
-    #     # Find the minimum commute time from the results
-    #     min_commute_time = ...
-    #     nearest_capital = ...
-    #
-    #     # Get commute time to Budapest specifically
-    #     commute_to_budapest = ...
-    #
-    #     # Update your database with this new information
-    #     update_database(town_name, min_commute_time, nearest_capital, commute_to_budapest)
+    # 1. Prepare database and load data
+    add_commute_columns()
+    county_data = load_county_neighbors()
+    all_towns = get_all_towns_data()
+    capital_coords_map = get_capital_cities_coords(all_towns, county_data)
 
-    # For now, let's just print the plan for a few towns to see how it works:
-    print("Example plan for a few towns:")
-    for i, (town_name, data) in enumerate(plan.items()):
-        if i >= 5: break
-        print(f"\nTown: {town_name} ({data['origin']})")
-        print("  Destinations to calculate commute time for:")
-        for dest_name, dest_coords in data['destinations'].items():
-            print(f"    - {dest_name} ({dest_coords})")
+    print("\nStarting commute time enrichment process...")
+    total_towns = len(all_towns)
 
+    # 2. Loop through each town and process
+    for i, town in enumerate(all_towns[10:500]):
+        print(f"({i+1}/{total_towns}) Processing: {town['name']}...")
+        
+        # Normalize county name (e.g., "Fejér vármegye" -> "Fejér")
+        town_county = town['county'].replace(' vármegye', '')
+        if town_county not in county_data:
+            print(f"  WARNING: County '{town['county']}' not found in relationships JSON. Skipping.")
+            continue
+
+        # 3. Build the list of destinations for this specific town
+        destinations_to_check = {}
+        relevant_county_names = [town_county] + county_data[town_county].get('neighbors', [])
+        
+        for county_name in relevant_county_names:
+            capital_name = county_data.get(county_name, {}).get('capital')
+            if capital_name and capital_name in capital_coords_map:
+                destinations_to_check[capital_name] = capital_coords_map[capital_name]
+        
+        # Always add Budapest
+        if "Budapest" in capital_coords_map:
+            destinations_to_check["Budapest"] = capital_coords_map["Budapest"]
+
+        # 4. Make the API call
+        origin_coords = {"latitude": town['latitude'], "longitude": town['longitude']}
+        commute_results = calculate_commute_times(routes_client, origin_coords, destinations_to_check)
+        
+        if commute_results is None:
+            print(f"  Skipping database update for {town['name']} due to API error.")
+            continue
+
+        # 5. Process results and update the database
+        budapest_mins = commute_results.get("Budapest")
+        
+        capital_commutes = {
+            name: mins for name, mins in commute_results.items() 
+            if name != "Budapest" and mins is not None
+        }
+
+        if capital_commutes:
+            nearest_capital_name = min(capital_commutes, key=capital_commutes.get)
+            nearest_capital_mins = capital_commutes[nearest_capital_name]
+            
+            update_town_in_db(
+                town['name'],
+                budapest_mins,
+                nearest_capital_mins,
+                nearest_capital_name
+            )
+            print(f"  -> Budapest: {budapest_mins} min. Nearest capital: {nearest_capital_name} ({nearest_capital_mins} min). DB updated.")
+        else:
+            print(f"  -> Could not determine nearest capital for {town['name']}.")
+            # Still update with Budapest time if available
+            update_town_in_db(town['name'], budapest_mins, None, None)
+
+        # A small delay to respect API rate limits and avoid overwhelming the service
+        time.sleep(0.05) 
+
+    print("\nEnrichment process complete!")
 
 if __name__ == "__main__":
     main()
